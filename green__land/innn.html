@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Grid with PNG Tiles</title>
+  <style>
+    canvas {
+      border: 2px solid #000;
+      display: block;
+      margin: 20px auto;
+      cursor: pointer;
+    }
+    button {
+      display: block;
+      margin: 10px auto;
+      padding: 8px 16px;
+      font-size: 16px;
+    }
+    .controls {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #animationSpeed {
+      width: 200px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<div class="controls">
+  <label for="animationSpeed">Animation Speed: </label>
+  <input type="range" id="animationSpeed" min="1" max="100" value="50">
+  <span id="speedValue">50</span>
+</div>
+<canvas id="myCanvas" width="600" height="400"></canvas>
+<button id="generateBtn">Generate New Grid</button>
+
+<!-- Hidden image elements for preloading -->
+<div id="imageAssets" style="display:none;">
+  <img id="redTile" src="image.png" alt="Red Tile">
+  <img id="blueTile" src="Screenshot 2025-04-22 125419.png" alt="Blue Tile">
+  <img id="blueTile" src="image.png" alt="Blue Tile">
+  <img id="darkBlueTile" src="Screenshot 2025-04-22 134641.png" alt="Dark Blue Tile">
+  <img id="darkBlueTile" src="Screenshot 2025-04-22 134624.png" alt="Dark Blue Tile">
+  <img id="darkBlueTile" src="Screenshot 2025-04-22 125453.png" alt="Dark Blue Tile">
+  <img id="greenTile" src="Screenshot 2025-04-23 143835.png" alt="Green Tile">
+  <img id="yellowTile" src="ground.png" alt="Yellow Tile">
+</div>
+
+<script>
+  const canvas = document.getElementById("myCanvas");
+  const ctx = canvas.getContext("2d");
+  const generateBtn = document.getElementById("generateBtn");
+  const animationSpeedControl = document.getElementById("animationSpeed");
+  const speedValue = document.getElementById("speedValue");
+  
+  // Grid settings
+  const gridSize = 30;
+  const gridCols = Math.floor(canvas.width / gridSize);
+  const gridRows = Math.floor(canvas.height / gridSize);
+  const GREEN_POINTS_COUNT = 5  
+  // Tile image references
+  const TILE_IMAGES = {
+    RED: document.getElementById("redTile"),
+    BLUE: document.getElementById("blueTile"),
+    DARK_BLUE: document.getElementById("darkBlueTile"),
+    GREEN: document.getElementById("greenTile"),
+    YELLOW: document.getElementById("yellowTile")
+  };
+  
+  // Adjacency rules
+  const ADJACENCY_RULES = {
+    RED: ["BLUE", "DARK_BLUE", "YELLOW", "GREEN"],
+    GREEN: ["YELLOW", "RED"],
+    YELLOW: ["BLUE", "DARK_BLUE", "GREEN", "RED"],
+    BLUE: ["DARK_BLUE", "YELLOW", "RED"],
+    DARK_BLUE: ["BLUE", "YELLOW", "RED"]
+  };
+  
+  let grid = [];
+  let greenPoints = [];
+  let imagesLoaded = false;
+  let animationFrameId = null;
+  let animationSteps = [];
+  let currentStep = 0;
+  let animationInterval = null;
+  let hoveredGreenTile = null;
+  
+  // Update speed display
+  animationSpeedControl.addEventListener("input", function() {
+    speedValue.textContent = this.value;
+  });
+  
+  // Wait for all images to load
+  function checkAllImagesLoaded() {
+    const images = Object.values(TILE_IMAGES);
+    imagesLoaded = images.every(img => img.complete && img.naturalHeight !== 0);
+    
+    if (imagesLoaded) {
+      generateNewGrid();
+    } else {
+      setTimeout(checkAllImagesLoaded, 100);
+    }
+  }
+  
+  // Initialize after images load
+  window.addEventListener('load', checkAllImagesLoaded);
+  
+  function initializeGrid() {
+    grid = [];
+    greenPoints = [];
+    animationSteps = [];
+    currentStep = 0;
+    hoveredGreenTile = null;
+    
+    // Create empty grid
+    for (let y = 0; y < gridRows; y++) {
+      const row = [];
+      for (let x = 0; x < gridCols; x++) {
+        row.push({
+          collapsed: false,
+          options: ["BLUE", "DARK_BLUE", "GREEN", "YELLOW"]
+        });
+      }
+      grid.push(row);
+    }
+  }
+  
+  function placeGreenPoints() {
+    // Place green points at random positions
+    for (let i = 0; i < GREEN_POINTS_COUNT; i++) {
+      let placed = false;
+      let attempts = 0;
+      
+      while (!placed && attempts < 100) {
+        const x = Math.floor(Math.random() * gridCols);
+        const y = Math.floor(Math.random() * gridRows);
+        
+        // Ensure minimum distance between green points
+        let validPosition = true;
+        for (const point of greenPoints) {
+          const dx = point.x - x;
+          const dy = point.y - y;
+          const distance = Math.sqrt(dx*dx + dy*dy);
+          if (distance < 3) {
+            validPosition = false;
+            break;
+          }
+        }
+        
+        if (validPosition) {
+          grid[y][x].collapsed = true;
+          grid[y][x].options = ["GREEN"];
+          greenPoints.push({x, y, number: i+1});
+          placed = true;
+          
+          // Add to animation steps
+          animationSteps.push({
+            type: "placeGreen",
+            x, y, number: i+1
+          });
+          
+          // Force all neighbors to be yellow (except one that will be red)
+          const neighbors = [
+            {x: x-1, y, dir: "left"},
+            {x: x+1, y, dir: "right"},
+            {x, y: y-1, dir: "top"},
+            {x, y: y+1, dir: "bottom"}
+          ].filter(n => n.x >= 0 && n.x < gridCols && n.y >= 0 && n.y < gridRows);
+          
+          for (const neighbor of neighbors) {
+            const nCell = grid[neighbor.y][neighbor.x];
+            if (!nCell.collapsed) {
+              nCell.options = ["YELLOW"];
+              animationSteps.push({
+                type: "constrain",
+                x: neighbor.x,
+                y: neighbor.y,
+                options: ["YELLOW"]
+              });
+            }
+          }
+          
+          propagate(x, y);
+        }
+        
+        attempts++;
+      }
+    }
+  }
+  
+  function connectGreenPointsSingleSide() {
+    // Sort green points in descending order
+    greenPoints.sort((a, b) => b.number - a.number);
+    
+    // Connect each point to the next with a single red connection
+    for (let i = 0; i < greenPoints.length - 1; i++) {
+      const start = greenPoints[i];
+      const end = greenPoints[i+1];
+      
+      // Choose one direction to connect (randomly)
+      const directions = [];
+      if (start.x > 0) directions.push("left");
+      if (start.x < gridCols-1) directions.push("right");
+      if (start.y > 0) directions.push("top");
+      if (start.y < gridRows-1) directions.push("bottom");
+      
+      if (directions.length === 0) continue;
+      
+      const dir = directions[Math.floor(Math.random() * directions.length)];
+      let connectX, connectY;
+      
+      switch(dir) {
+        case "left":
+          connectX = start.x - 1;
+          connectY = start.y;
+          break;
+        case "right":
+          connectX = start.x + 1;
+          connectY = start.y;
+          break;
+        case "top":
+          connectX = start.x;
+          connectY = start.y - 1;
+          break;
+        case "bottom":
+          connectX = start.x;
+          connectY = start.y + 1;
+          break;
+      }
+      
+      // Mark this cell as red
+      grid[connectY][connectX].collapsed = true;
+      grid[connectY][connectX].options = ["RED"];
+      
+      animationSteps.push({
+        type: "collapse",
+        x: connectX,
+        y: connectY,
+        option: "RED"
+      });
+      
+      // Create path from this red cell to the next green point
+      createPathFromRedToGreen(connectX, connectY, end);
+    }
+  }
+  
+  function createPathFromRedToGreen(startX, startY, endGreen) {
+    let currentX = startX;
+    let currentY = startY;
+    
+    // Move horizontally first
+    while (currentX !== endGreen.x) {
+      if (currentX < endGreen.x) currentX++;
+      else currentX--;
+      
+      // Skip if we hit a green tile
+      if (grid[currentY][currentX].collapsed && grid[currentY][currentX].options[0] === "GREEN") {
+        continue;
+      }
+      
+      grid[currentY][currentX].collapsed = true;
+      grid[currentY][currentX].options = ["RED"];
+      
+      animationSteps.push({
+        type: "collapse",
+        x: currentX,
+        y: currentY,
+        option: "RED"
+      });
+    }
+    
+    // Then move vertically
+    while (currentY !== endGreen.y) {
+      if (currentY < endGreen.y) currentY++;
+      else currentY--;
+      
+      // Skip if we hit a green tile
+      if (grid[currentY][currentX].collapsed && grid[currentY][currentX].options[0] === "GREEN") {
+        continue;
+      }
+      
+      grid[currentY][currentX].collapsed = true;
+      grid[currentY][currentX].options = ["RED"];
+      
+      animationSteps.push({
+        type: "collapse",
+        x: currentX,
+        y: currentY,
+        option: "RED"
+      });
+    }
+  }
+  
+  function findLowestEntropyCell() {
+    let minEntropy = Infinity;
+    let candidates = [];
+    
+    for (let y = 0; y < gridRows; y++) {
+      for (let x = 0; x < gridCols; x++) {
+        const cell = grid[y][x];
+        if (!cell.collapsed && cell.options.length > 0) {
+          if (cell.options.length < minEntropy) {
+            minEntropy = cell.options.length;
+            candidates = [{x, y}];
+          } else if (cell.options.length === minEntropy) {
+            candidates.push({x, y});
+          }
+        }
+      }
+    }
+    
+    if (candidates.length === 0) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+  
+  function collapseCell(x, y) {
+    const cell = grid[y][x];
+    if (cell.options.length === 0) return false;
+    
+    const randomIndex = Math.floor(Math.random() * cell.options.length);
+    cell.collapsed = true;
+    cell.options = [cell.options[randomIndex]];
+    
+    animationSteps.push({
+      type: "collapse",
+      x, y,
+      option: cell.options[0]
+    });
+    
+    return true;
+  }
+  
+  function propagate(x, y) {
+    const stack = [{x, y}];
+    
+    while (stack.length > 0) {
+      const {x, y} = stack.pop();
+      const cell = grid[y][x];
+      const currentOption = cell.options[0];
+      
+      const neighbors = [
+        {x: x-1, y},
+        {x: x+1, y},
+        {x, y: y-1},
+        {x, y: y+1}
+      ].filter(n => n.x >= 0 && n.x < gridCols && n.y >= 0 && n.y < gridRows);
+      
+      for (const neighbor of neighbors) {
+        const nCell = grid[neighbor.y][neighbor.x];
+        if (nCell.collapsed) continue;
+        
+        const originalLength = nCell.options.length;
+        nCell.options = nCell.options.filter(option => 
+          ADJACENCY_RULES[currentOption].includes(option)
+        );
+        
+        if (nCell.options.length !== originalLength) {
+          animationSteps.push({
+            type: "constrain",
+            x: neighbor.x,
+            y: neighbor.y,
+            options: [...nCell.options]
+          });
+          
+          if (nCell.options.length === 0) {
+            console.warn("Contradiction at", neighbor.x, neighbor.y);
+            return false;
+          }
+          stack.push(neighbor);
+        }
+      }
+    }
+    return true;
+  }
+  
+  function runWFC() {
+    initializeGrid();
+    
+    // Place green points with yellow neighbors
+    placeGreenPoints();
+    
+    // Connect green points with single red connections
+    connectGreenPointsSingleSide();
+    
+    // Generate the rest of the grid
+    let done = false;
+    while (!done) {
+      const cell = findLowestEntropyCell();
+      if (!cell) {
+        done = true;
+        break;
+      }
+      
+      collapseCell(cell.x, cell.y);
+      if (!propagate(cell.x, cell.y)) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  function isGreenTile(x, y) {
+    if (y >= 0 && y < gridRows && x >= 0 && x < gridCols) {
+      const cell = grid[y][x];
+      return cell.collapsed && cell.options[0] === "GREEN";
+    }
+    return false;
+  }
+  
+  function handleMouseMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const gridX = Math.floor(mouseX / gridSize);
+    const gridY = Math.floor(mouseY / gridSize);
+    
+    // Remove previous hover effect
+    if (hoveredGreenTile) {
+      drawGrid(); // Redraw the grid to remove the effect
+      hoveredGreenTile = null;
+    }
+    
+    // Check if we're hovering over a green tile
+    if (isGreenTile(gridX, gridY)) {
+      hoveredGreenTile = {x: gridX, y: gridY};
+      drawHoverEffect(gridX, gridY);
+    }
+  }
+  
+  function drawHoverEffect(x, y) {
+    // Save the current canvas state
+    ctx.save();
+    
+    // Draw the tile with hover effect
+    const img = TILE_IMAGES["GREEN"];
+    
+    // Create a shadow effect
+    ctx.shadowColor = 'rgba(0, 255, 0, 0.8)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    
+    // Draw the image slightly larger
+    const scale = 1.1;
+    const offset = (gridSize * scale - gridSize) / 2;
+    ctx.drawImage(
+      img, 
+      x * gridSize - offset, 
+      y * gridSize - offset, 
+      gridSize * scale, 
+      gridSize * scale
+    );
+    
+    // Find the green point info
+    const point = greenPoints.find(p => p.x === x && p.y === y);
+    if (point) {
+      // Draw the number
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.arc(
+        x * gridSize + gridSize/2,
+        y * gridSize + gridSize/2,
+        8 * scale, 0, Math.PI * 2
+      );
+      ctx.fill();
+      
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold " + (12 * scale) + "px Arial";
+      ctx.fillText(
+        point.number.toString(),
+        x * gridSize + gridSize/2 - 4 * scale,
+        y * gridSize + gridSize/2 + 4 * scale
+      );
+    }
+    
+    // Restore the canvas state
+    ctx.restore();
+  }
+  
+  function drawGrid() {
+    if (!imagesLoaded) return;
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw tiles using images (skip the hovered tile)
+    for (let y = 0; y < gridRows; y++) {
+      for (let x = 0; x < gridCols; x++) {
+        // Skip the currently hovered tile (we'll draw it separately)
+        if (hoveredGreenTile && hoveredGreenTile.x === x && hoveredGreenTile.y === y) {
+          continue;
+        }
+        
+        const cell = grid[y][x];
+        if (cell.collapsed && cell.options.length > 0) {
+          const tileType = cell.options[0];
+          const img = TILE_IMAGES[tileType];
+          
+          // Draw the image
+          ctx.drawImage(img, x * gridSize, y * gridSize, gridSize, gridSize);
+        }
+        
+        // Draw grid lines
+        ctx.strokeStyle = "#888";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      }
+    }
+    
+    // Highlight green points with numbers (except hovered one)
+    ctx.fillStyle = "#000";
+    greenPoints.forEach((point) => {
+      if (hoveredGreenTile && hoveredGreenTile.x === point.x && hoveredGreenTile.y === point.y) {
+        return; // Skip the hovered tile
+      }
+      
+      ctx.beginPath();
+      ctx.arc(
+        point.x * gridSize + gridSize/2,
+        point.y * gridSize + gridSize/2,
+        8, 0, Math.PI * 2
+      );
+      ctx.fill();
+      
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 12px Arial";
+      ctx.fillText(
+        point.number.toString(),
+        point.x * gridSize + gridSize/2 - 4,
+        point.y * gridSize + gridSize/2 + 4
+      );
+      ctx.fillStyle = "#000";
+    });
+    
+    // Display info
+    ctx.fillStyle = "#000";
+    ctx.font = "16px Arial";
+    ctx.fillText(`Green points with single red connections (${greenPoints.length})`, 10, 20);
+    
+    // If there's a hovered tile, draw it with the effect
+    if (hoveredGreenTile) {
+      drawHoverEffect(hoveredGreenTile.x, hoveredGreenTile.y);
+    }
+  }
+  
+  function drawAnimationStep(step) {
+    if (!step) return;
+    
+    if (step.type === "collapse") {
+      const {x, y, option} = step;
+      const img = TILE_IMAGES[option];
+      ctx.drawImage(img, x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // Draw grid line
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // If it's a green tile, draw the number
+      if (option === "GREEN") {
+        const point = greenPoints.find(p => p.x === x && p.y === y);
+        if (point) {
+          ctx.fillStyle = "#000";
+          ctx.beginPath();
+          ctx.arc(
+            x * gridSize + gridSize/2,
+            y * gridSize + gridSize/2,
+            8, 0, Math.PI * 2
+          );
+          ctx.fill();
+          
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold 12px Arial";
+          ctx.fillText(
+            point.number.toString(),
+            x * gridSize + gridSize/2 - 4,
+            y * gridSize + gridSize/2 + 4
+          );
+        }
+      }
+    }
+    else if (step.type === "constrain") {
+      const {x, y} = step;
+      // Visualize constrained cells with a lighter color
+      ctx.fillStyle = "rgba(200, 200, 255, 0.3)";
+      ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // Draw grid line
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // Show number of remaining options
+      ctx.fillStyle = "#000";
+      ctx.font = "10px Arial";
+      ctx.fillText(
+        step.options.length.toString(),
+        x * gridSize + gridSize/2 - 3,
+        y * gridSize + gridSize/2 + 3
+      );
+    }
+    else if (step.type === "placeGreen") {
+      const {x, y, number} = step;
+      const img = TILE_IMAGES["GREEN"];
+      ctx.drawImage(img, x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // Draw grid line
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      
+      // Draw the number
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.arc(
+        x * gridSize + gridSize/2,
+        y * gridSize + gridSize/2,
+        8, 0, Math.PI * 2
+      );
+      ctx.fill();
+      
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 12px Arial";
+      ctx.fillText(
+        number.toString(),
+        x * gridSize + gridSize/2 - 4,
+        y * gridSize + gridSize/2 + 4
+      );
+    }
+  }
+  
+  function startAnimation() {
+    if (animationInterval) {
+      clearInterval(animationInterval);
+    }
+    
+    // Reset the grid visualization
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw empty grid
+    ctx.strokeStyle = "#888";
+    ctx.lineWidth = 1;
+    for (let y = 0; y < gridRows; y++) {
+      for (let x = 0; x < gridCols; x++) {
+        ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+      }
+    }
+    
+    currentStep = 0;
+    const speed = 101 - animationSpeedControl.value; // Reverse the value (higher = faster)
+    
+    animationInterval = setInterval(() => {
+      if (currentStep < animationSteps.length) {
+        drawAnimationStep(animationSteps[currentStep]);
+        currentStep++;
+      } else {
+        clearInterval(animationInterval);
+        // Draw the final grid to ensure everything is correct
+        drawGrid();
+      }
+    }, speed);
+  }
+  
+  function generateNewGrid() {
+    if (!imagesLoaded) {
+      console.log("Waiting for images to load...");
+      return;
+    }
+    
+    let success = false;
+    let attempts = 0;
+    
+    while (!success && attempts < 10) {
+      success = runWFC();
+      attempts++;
+    }
+    
+    if (success) {
+      startAnimation();
+    } else {
+      alert("Failed to generate a valid grid after several attempts. Please try again.");
+    } 
+  }
+  
+  // Add event listeners
+  generateBtn.addEventListener("click", generateNewGrid);
+  canvas.addEventListener('mousemove', handleMouseMove);
+  canvas.addEventListener('mouseout', function() {
+    if (hoveredGreenTile) {
+      drawGrid(); // Redraw the grid to remove the effect
+      hoveredGreenTile = null;
+    }
+  });
+</script>
+</body>
+</html>
